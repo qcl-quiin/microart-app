@@ -1,0 +1,99 @@
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
+import '../models/history_entry.dart';
+import '../models/notification_entry.dart';
+
+class DatabaseHelper {
+  DatabaseHelper._internal();
+  static final DatabaseHelper instance = DatabaseHelper._internal();
+
+  static Database? _db;
+
+  Future<Database> get database async {
+    if (_db != null) return _db!;
+    _db = await _initDb();
+    return _db!;
+  }
+
+  Future<Database> _initDb() async {
+    final path = join(await getDatabasesPath(), 'microart.db');
+    return openDatabase(
+      path,
+      version: 3,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            result TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            description TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            image_crop TEXT
+          )
+        ''');
+        await db.execute('''
+          CREATE TABLE notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0
+          )
+        ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('''
+            CREATE TABLE notifications (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              body TEXT NOT NULL,
+              timestamp TEXT NOT NULL,
+              is_read INTEGER NOT NULL DEFAULT 0
+            )
+          ''');
+        }
+        if (oldVersion < 3) {
+          await db.execute('ALTER TABLE history ADD COLUMN image_crop TEXT');
+        }
+      },
+    );
+  }
+
+  Future<int> insertHistory(HistoryEntry entry) async {
+    final db = await database;
+    return db.insert('history', entry.toMap());
+  }
+
+  Future<List<HistoryEntry>> getAllHistory() async {
+    final db = await database;
+    final maps = await db.query('history', orderBy: 'timestamp DESC');
+    return maps.map((m) => HistoryEntry.fromMap(m)).toList();
+  }
+
+  Future<void> deleteAllHistory() async {
+    final db = await database;
+    await db.delete('history');
+  }
+
+  Future<int> insertNotification(NotificationEntry entry) async {
+    final db = await database;
+    return db.insert('notifications', entry.toMap());
+  }
+
+  Future<List<NotificationEntry>> getAllNotifications() async {
+    final db = await database;
+    final maps = await db.query('notifications', orderBy: 'timestamp DESC');
+    return maps.map((m) => NotificationEntry.fromMap(m)).toList();
+  }
+
+  Future<void> markNotificationRead(int id) async {
+    final db = await database;
+    await db.update('notifications', {'is_read': 1}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    final db = await database;
+    await db.update('notifications', {'is_read': 1});
+  }
+}

@@ -17,7 +17,7 @@ class MicroArtApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'MicroArt',
+      title: 'MicroAct',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       home: const MainScaffold(),

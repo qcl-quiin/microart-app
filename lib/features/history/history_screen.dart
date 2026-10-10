@@ -74,7 +74,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text('Xóa', style: TextStyle(color: AppColors.danger)),
+            child: const Text('Xóa', style: TextStyle(color: AppColors.danger)),
           ),
         ],
       ),

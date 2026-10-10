@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import '../../core/navigation/tab_navigation_controller.dart';
 import '../../core/theme/app_colors.dart';
@@ -50,8 +50,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final match = _items.where((e) => e.id == id);
     if (match.isNotEmpty) {
       _openDetail(match.first);
-    } else {
-      print('[MicroArt] HistoryScreen: không tìm thấy phiên id=$id để mở chi tiết');
+    } else if (kDebugMode) {
+      debugPrint('[MicroArt] HistoryScreen: không tìm thấy phiên id=$id để mở chi tiết');
     }
   }
 
@@ -85,21 +85,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  Future<void> _addMockEntry() async {
-    final isReal = DateTime.now().second % 2 == 0;
-    await DatabaseHelper.instance.insertHistory(
-      HistoryEntry(
-        result: isReal ? 'REAL' : 'FAKE',
-        confidence: isReal ? 92.5 : 85.0,
-        description: isReal
-            ? 'Phát hiện vi chuyển động tự nhiên. Xác suất người thật cao.'
-            : 'Không phát hiện vi chuyển động. Có dấu hiệu giả mạo.',
-        timestamp: DateTime.now(),
-      ),
-    );
-    await _loadHistory();
-  }
-
   void _openDetail(HistoryEntry item) {
     Navigator.push(
       context,
@@ -114,7 +99,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
       appBar: AppBar(
         title: const Text('Lịch sử'),
         actions: [
-          IconButton(icon: const Icon(Icons.add), onPressed: _addMockEntry, tooltip: 'Thêm dữ liệu mẫu (debug)'),
           IconButton(icon: const Icon(Icons.delete_outline), onPressed: _confirmDeleteAll, tooltip: 'Xóa tất cả'),
         ],
       ),
@@ -196,7 +180,7 @@ class _HistoryCard extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                Text('${item.confidence}%',
+                Text('${item.confidence.toStringAsFixed(1)}%',
                     style: theme.textTheme.titleLarge?.copyWith(color: color, fontWeight: FontWeight.w700)),
               ],
             ),
@@ -238,27 +222,6 @@ class _HistoryDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (item.imageCrop != null)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Image.memory(
-                  base64Decode(item.imageCrop!),
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
-              )
-            else
-              Container(
-                width: double.infinity,
-                height: 200,
-                decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                alignment: Alignment.center,
-                child: Text('Không có ảnh bằng chứng', style: theme.textTheme.bodyMedium),
-              ),
-            const SizedBox(height: 20),
             Row(
               children: [
                 Container(
@@ -280,7 +243,7 @@ class _HistoryDetailScreen extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                Text('${item.confidence}%',
+                Text('${item.confidence.toStringAsFixed(1)}%',
                     style: theme.textTheme.displayLarge?.copyWith(color: color, fontSize: 28)),
               ],
             ),

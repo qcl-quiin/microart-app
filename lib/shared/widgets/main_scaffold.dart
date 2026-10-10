@@ -44,11 +44,9 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
+  // Nút tròn giữa thanh dưới: đi thẳng tới tab Nhận diện.
   void _onFabPressed() {
     TabNavigationController.requestedTabIndex.value = 0;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Mở nhanh nhận diện')),
-    );
   }
 
   @override
@@ -61,7 +59,8 @@ class _MainScaffoldState extends State<MainScaffold> {
       floatingActionButton: FloatingActionButton(
         onPressed: _onFabPressed,
         elevation: 4,
-        child: const Icon(Icons.add, size: 28),
+        tooltip: 'Nhận diện',
+        child: const Icon(Icons.shield_outlined, size: 28),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       bottomNavigationBar: _BottomNav(

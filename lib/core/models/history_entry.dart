@@ -1,10 +1,9 @@
 class HistoryEntry {
   final int? id;
-  final String result;
-  final double confidence;
+  final String result; // 'REAL' hoặc 'FAKE'
+  final double confidence; // điểm % của kết luận
   final String description;
   final DateTime timestamp;
-  final String? imageCrop;
 
   const HistoryEntry({
     this.id,
@@ -12,7 +11,6 @@ class HistoryEntry {
     required this.confidence,
     required this.description,
     required this.timestamp,
-    this.imageCrop,
   });
 
   Map<String, dynamic> toMap() {
@@ -22,7 +20,6 @@ class HistoryEntry {
       'confidence': confidence,
       'description': description,
       'timestamp': timestamp.toIso8601String(),
-      'image_crop': imageCrop,
     };
   }
 
@@ -33,7 +30,6 @@ class HistoryEntry {
       confidence: (map['confidence'] as num).toDouble(),
       description: map['description'] as String,
       timestamp: DateTime.parse(map['timestamp'] as String),
-      imageCrop: map['image_crop'] as String?,
     );
   }
 

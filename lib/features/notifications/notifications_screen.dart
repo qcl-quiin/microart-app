@@ -41,21 +41,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
-  // TODO: xóa hàm này và nút gọi nó khi Bước 3 (detect thật) xong.
-  Future<void> _addMockNotif() async {
-    final isReal = DateTime.now().second % 2 == 0;
-    await DatabaseHelper.instance.insertNotification(
-      NotificationEntry(
-        title: isReal ? 'Nhận diện hoàn tất' : 'Cảnh báo',
-        body: isReal
-            ? 'Kết quả: NGƯỜI THẬT — 92.5%'
-            : 'Phát hiện dấu hiệu giả mạo — 85.0%',
-        timestamp: DateTime.now(),
-      ),
-    );
-    await _loadNotifs();
-  }
-
   String _formatTime(DateTime dt) {
     final now = DateTime.now();
     final isToday = dt.year == now.year && dt.month == now.month && dt.day == now.day;
@@ -77,12 +62,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       appBar: AppBar(
         title: const Text('Thông báo'),
         actions: [
-          // TODO: xóa nút này khi Bước 3 xong
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: _addMockNotif,
-            tooltip: 'Thêm dữ liệu mẫu (debug)',
-          ),
           TextButton(
             onPressed: _markAllRead,
             child: const Text('Đọc tất cả', style: TextStyle(color: Colors.white, fontSize: 13)),

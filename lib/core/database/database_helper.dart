@@ -15,11 +15,19 @@ class DatabaseHelper {
     return _db!;
   }
 
+  // Lịch sử phiên bản CSDL:
+  //   1 -> bảng history
+  //   2 -> thêm bảng notifications
+  //   3 -> thêm cột image_crop        (ảnh bằng chứng — đã bỏ ở bản 5)
+  //   4 -> thêm cột evidence_caption  (chú thích ảnh — đã bỏ ở bản 5)
+  //   5 -> bỏ hẳn ảnh bằng chứng: xoá dữ liệu ảnh/chú thích đã lưu. Hai cột cũ vẫn còn ở máy
+  //        nâng cấp từ bản cũ (luôn rỗng, mã không đọc/ghi nữa); máy cài mới không có hai cột này.
+  //        Không dùng DROP COLUMN vì SQLite của Android đời cũ không hỗ trợ.
   Future<Database> _initDb() async {
     final path = join(await getDatabasesPath(), 'microart.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 5,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE history (
@@ -27,8 +35,7 @@ class DatabaseHelper {
             result TEXT NOT NULL,
             confidence REAL NOT NULL,
             description TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            image_crop TEXT
+            timestamp TEXT NOT NULL
           )
         ''');
         await db.execute('''
@@ -55,6 +62,13 @@ class DatabaseHelper {
         }
         if (oldVersion < 3) {
           await db.execute('ALTER TABLE history ADD COLUMN image_crop TEXT');
+        }
+        if (oldVersion < 4) {
+          await db.execute('ALTER TABLE history ADD COLUMN evidence_caption TEXT');
+        }
+        if (oldVersion < 5) {
+          // Bỏ hẳn ảnh bằng chứng: xoá ảnh và chú thích đã lưu ở các phiên cũ.
+          await db.execute('UPDATE history SET image_crop = NULL, evidence_caption = NULL');
         }
       },
     );

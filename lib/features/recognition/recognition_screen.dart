@@ -1,15 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:moinsen_screen_recording/moinsen_screen_recording.dart';
+import 'package:video_compress/video_compress.dart';
 import '../../core/navigation/tab_navigation_controller.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/database/database_helper.dart';
 import '../../core/models/history_entry.dart';
 import '../../core/models/notification_entry.dart';
+
+// Log chỉ in khi chạy bản debug (flutter run), hoặc khi build kèm --dart-define=MICROART_LOG=true.
+// Bản release bình thường KHÔNG in gì ra logcat (tránh lộ tên tệp, đường dẫn).
+const bool _kVerboseLog = bool.fromEnvironment('MICROART_LOG');
+
+void _log(String message) {
+  if (kDebugMode || _kVerboseLog) debugPrint(message);
+}
 
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
@@ -20,8 +31,22 @@ class RecognitionScreen extends StatefulWidget {
 
 class _RecognitionScreenState extends State<RecognitionScreen> {
   Timer? _pollTimer;
+  bool _busy = false;
 
   static const MethodChannel _nativeChannel = MethodChannel('microart/native');
+
+  // Địa chỉ máy chủ (Modal). Deploy ra URL mới thì đổi ở đây.
+  static const String _serverUrl = 'https://danghoanganhquan6--microart-tang1-tang1service-check-liveness.modal.run';
+
+  // Luồng ghi: app ghi màn hình TỪ LÚC CẤP QUYỀN (plugin hỏi quyền và ghi cùng một lúc), nhưng chỉ
+  // phân tích từ lúc người dùng bấm ✓ trên khung. Server cắt bỏ phần đầu theo trim_start_sec.
+  static const double _guardSec = 0.8; // bỏ 0.8s đầu sau khi bấm ✓ (thao tác bấm, khung thu lại thành bong bóng)
+  static const double _captureSec = 10.0; // đoạn phân tích
+  static const double _tailBufferSec = 0.7; // ghi thêm một chút cho an toàn khi sai lệch đồng hồ
+  static const int _confirmTimeoutSec = 90; // quá lâu không bấm ✓ thì huỷ (file ghi sẽ phình to)
+
+  // Kích thước khung chọn mặt ban đầu (dp) — phải khớp _frameSize mặc định bên overlay (main.dart).
+  static const int _frameStartSize = 180;
 
   @override
   void initState() {
@@ -32,12 +57,19 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
   Future<void> _resetStaleOverlayState() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('pending_rect');
-    await prefs.remove('pending_action');
-    await prefs.remove('pending_action_id');
-    await prefs.remove('pending_result');
-    await prefs.remove('recording_started');
-    await prefs.remove('recording_cancelled');
+    for (final key in const [
+      'pending_rect',
+      'pending_action',
+      'pending_action_id',
+      'pending_result',
+      'recording_started',
+      'recording_cancelled',
+      'confirm_ms',
+      'cancel_session',
+      'self_zone',
+    ]) {
+      await prefs.remove(key);
+    }
     try {
       final active = await FlutterOverlayWindow.isActive();
       if (active) await FlutterOverlayWindow.closeOverlay();
@@ -50,36 +82,31 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     super.dispose();
   }
 
+  // Chỉ còn xử lý hành động do overlay gửi sang (xem chi tiết / nhận diện lại).
   Future<void> _checkPending() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
 
-    final rectRaw = prefs.getString('pending_rect');
-    if (rectRaw != null) {
-      await prefs.remove('pending_rect');
-      print('[MicroArt] app chính đọc được pending_rect: $rectRaw');
-      await _runRecognitionFlow();
-      return;
-    }
-
     final action = prefs.getString('pending_action');
-    if (action != null) {
-      await prefs.remove('pending_action');
-      print('[MicroArt] app chính đọc được pending_action: $action');
-      if (action == 'view_details') {
-        final historyId = prefs.getInt('pending_action_id');
-        await prefs.remove('pending_action_id');
-        print('[MicroArt] xử lý view_details: đưa app lên trước, mở chi tiết id=$historyId');
-        try {
-          await _nativeChannel.invokeMethod('bringToFront');
-        } catch (e) {
-          print('[MicroArt] LỖI (bỏ qua) khi bringToFront: $e');
-        }
-        if (historyId != null) {
-          TabNavigationController.pendingHistoryDetailId.value = historyId;
-        }
-        TabNavigationController.requestedTabIndex.value = 1; // Lịch sử
+    if (action == null) return;
+    await prefs.remove('pending_action');
+    _log('[MicroArt] app chính đọc được pending_action: $action');
+
+    if (action == 'view_details') {
+      final historyId = prefs.getInt('pending_action_id');
+      await prefs.remove('pending_action_id');
+      _log('[MicroArt] xử lý view_details: đưa app lên trước, mở chi tiết id=$historyId');
+      try {
+        await _nativeChannel.invokeMethod('bringToFront');
+      } catch (e) {
+        _log('[MicroArt] LỖI (bỏ qua) khi bringToFront: $e');
       }
+      if (historyId != null) {
+        TabNavigationController.pendingHistoryDetailId.value = historyId;
+      }
+      TabNavigationController.requestedTabIndex.value = 1; // Lịch sử
+    } else if (action == 'retry') {
+      unawaited(_startRecognition());
     }
   }
 
@@ -87,61 +114,427 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     try {
       await _nativeChannel.invokeMethod('moveTaskToBack');
     } catch (e) {
-      print('[MicroArt] LỖI (bỏ qua) khi minimize app: $e');
+      _log('[MicroArt] LỖI (bỏ qua) khi minimize app: $e');
     }
   }
 
-  Future<void> _runRecognitionFlow() async {
-    print('[MicroArt] _runRecognitionFlow() bắt đầu');
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
 
-    final videoName = 'microart_${DateTime.now().millisecondsSinceEpoch}';
-    bool started = false;
+  // Hộp lưu ý hiện MỘT LẦN trước khi bắt đầu (chỉ khi người dùng tự bấm nút, không hiện lại ở "Thử lại").
+  Future<bool> _askWarning() async {
+    if (!mounted) return false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        scrollable: true,
+        title: const Text('Lưu ý khi nhận diện'),
+        content: const Text(
+          '• Sau khi bấm ✓, KHÔNG chạm vào màn hình trong khoảng 10 giây. Một số app (như Messenger) '
+          'có thể đổi vị trí hai khuôn mặt khi bạn chạm.\n\n'
+          '• Khung xanh phải che đúng MẶT CỦA BẠN (ô nhỏ của bạn trong cuộc gọi). Hệ thống sẽ không '
+          'phân tích vùng đó.\n\n'
+          '• Bên kia chỉ nên có 1 người.\n\n'
+          '• Đoạn video 10 giây được gửi lên máy chủ để phân tích rồi xoá. Hãy xin phép người bên kia '
+          'trước khi kiểm tra.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Hủy')),
+          ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Đã hiểu, tiếp tục')),
+        ],
+      ),
+    );
+    return ok == true;
+  }
 
+  // Gọi 1 request rỗng để máy chủ khởi động trước (khởi động lạnh mất ~13s) — chạy ngầm trong lúc
+  // người dùng cấp quyền và phóng to cuộc gọi, nên khi video được gửi lên thì máy chủ đã sẵn sàng.
+  Future<void> _warmUpServer() async {
+    HttpClient? client;
     try {
-      started = await MoinsenScreenRecording.startRecordScreen(
-        videoName,
-        titleNotification: 'MicroArt đang ghi hình',
-        messageNotification: 'Đang ghi lại phiên nhận diện...',
-      );
-      print('[MicroArt] startRecordScreen trả về: $started');
-      if (started) {
-        await _moveAppToBackground();
-      }
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+      final req = await client.postUrl(Uri.parse(_serverUrl));
+      req.headers.contentType = ContentType.json;
+      final body = utf8.encode(jsonEncode({'frames_base64': <String>[]}));
+      req.contentLength = body.length;
+      req.add(body);
+      final resp = await req.close().timeout(const Duration(seconds: 60));
+      await resp.drain();
+      _log('[MicroArt] đã đánh thức máy chủ');
     } catch (e) {
-      print('[MicroArt] LỖI khi bắt đầu ghi màn hình: $e');
-      started = false;
+      _log('[MicroArt] đánh thức máy chủ không được (bỏ qua): $e');
+    } finally {
+      client?.close();
     }
+  }
 
+  Future<void> _startRecognition({bool showWarning = false}) async {
+    _log('[MicroArt] bấm Bắt đầu nhận diện (đang bận=$_busy)');
+    if (_busy) {
+      // Phiên trước còn dang dở (VD khung bị kẹt ngoài màn hình nên không bấm được ✓/✕): yêu cầu nó huỷ rồi chờ
+      // nó dọn xong, thay vì im lặng bỏ qua như trước (người dùng thấy "bấm mà không có gì xảy ra").
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('cancel_session', true);
+      for (var i = 0; i < 20 && _busy; i++) {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+      if (_busy) {
+        _showSnack('Phiên nhận diện trước vẫn đang xử lý. Đợi vài giây rồi bấm lại.');
+        return;
+      }
+    }
+    _busy = true;
+    try {
+      if (showWarning && !await _askWarning()) return;
+
+      final granted = await FlutterOverlayWindow.isPermissionGranted();
+      if (!granted) {
+        final result = await FlutterOverlayWindow.requestPermission();
+        if (result != true) return;
+      }
+
+      // Dọn tín hiệu cũ và overlay cũ (nếu còn) trước khi bắt đầu phiên mới.
+      final prefs = await SharedPreferences.getInstance();
+      for (final key in const ['confirm_ms', 'cancel_session', 'self_zone', 'pending_result', 'pending_action', 'pending_action_id']) {
+        await prefs.remove(key);
+      }
+      if (await FlutterOverlayWindow.isActive()) {
+        await FlutterOverlayWindow.closeOverlay();
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+
+      // Kích thước màn hình (dp): overlay dùng để giữ cửa sổ nằm trong màn hình, và để đặt khung ban đầu.
+      double screenW = 0;
+      double screenH = 0;
+      if (mounted) {
+        final size = MediaQuery.of(context).size;
+        screenW = size.width;
+        screenH = size.height;
+        await prefs.setDouble('screen_w_dp', screenW);
+        await prefs.setDouble('screen_h_dp', screenH);
+      }
+
+      unawaited(_warmUpServer());
+
+      // Bước 1: xin quyền ghi màn hình — plugin hỏi quyền và BẮT ĐẦU GHI ngay khi được cấp.
+      final videoName = 'microart_${DateTime.now().millisecondsSinceEpoch}';
+      bool started = false;
+      try {
+        started = await MoinsenScreenRecording.startRecordScreen(
+          videoName,
+          titleNotification: 'MicroAct đang ghi hình',
+          messageNotification: 'Đang ghi lại phiên nhận diện...',
+        ).timeout(const Duration(seconds: 120));
+      } catch (e) {
+        _log('[MicroArt] LỖI khi bắt đầu ghi màn hình: $e');
+      }
+      _log('[MicroArt] startRecordScreen trả về: $started');
+      if (!started) {
+        _showSnack('Cần cho phép ghi màn hình để nhận diện.');
+        return;
+      }
+      final recStartMs = DateTime.now().millisecondsSinceEpoch;
+
+      // Bước 2: hiện khung chọn mặt của bạn (góc trên-trái màn hình là gốc toạ độ), đặt ban đầu ở góc trên-phải
+      // — chỗ ô tự xem thường nằm — rồi đưa app xuống nền để người dùng thấy cuộc gọi.
+      //
+      // LƯU Ý (đã đọc mã nguồn plugin): showOverlay nhận kích thước bằng PIXEL, còn resizeOverlay/moveOverlay và
+      // vị trí dùng DP. Truyền thẳng 180 vào showOverlay chỉ ra cửa sổ ~68dp (khung bị tràn, nút chồng lên nhau;
+      // và là lý do bong bóng 64 trước đây bé trên máy thật). Nên đổi dp -> pixel ở đây, rồi đặt lại bằng
+      // resizeOverlay (dp) cho chắc.
+      final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+      final framePx = (_frameStartSize * dpr).round();
+      await FlutterOverlayWindow.showOverlay(
+        height: framePx,
+        width: framePx,
+        alignment: OverlayAlignment.topLeft,
+        enableDrag: true,
+      );
+      await _settleOverlay(screenW, screenH);
+      await _moveAppToBackground();
+
+      // Bước 3: chờ ✓ -> ghi đủ thời lượng -> dừng -> gửi server.
+      await _runSession(recStartMs);
+    } catch (e) {
+      _log('[MicroArt] _startRecognition LỖI: $e');
+      _showSnack('Lỗi: $e');
+    } finally {
+      _busy = false;
+    }
+  }
+
+  // Đặt khung vào vị trí ban đầu (dp, gốc là góc trên-trái màn hình). KHÔNG dùng resizeOverlay ở đây: hàm đó
+  // chỉ chạy được bên TRONG overlay, gọi từ app chính sẽ không có ai xử lý. Còn cỡ khung đã đúng nhờ showOverlay
+  // nhận pixel. Vị trí mặc định của plugin nằm trên mép màn hình (lỗi của plugin: đổi pixel thành dp hai lần),
+  // nên bắt buộc phải tự đặt. Dịch vụ overlay khởi động bất đồng bộ (moveOverlay trả về false nếu chưa sẵn
+  // sàng) và có thể tự đặt lại vị trí mặc định ngay sau khi khởi động, nên thử lại và KIỂM TRA vị trí thật.
+  Future<void> _settleOverlay(double screenW, double screenH) async {
+    final startX = screenW > 0 ? (screenW - _frameStartSize - 8).clamp(0.0, screenW).toDouble() : 120.0;
+    final startY = screenH > 0 ? screenH * 0.10 : 120.0;
+    for (var i = 0; i < 12; i++) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      try {
+        final moved = await FlutterOverlayWindow.moveOverlay(OverlayPosition(startX, startY));
+        if (moved != true) continue;
+        final pos = await FlutterOverlayWindow.getOverlayPosition();
+        if ((pos.x - startX).abs() < 2 && (pos.y - startY).abs() < 2) {
+          _log('[MicroArt] khung đã vào vị trí ($startX, $startY) dp sau ${i + 1} lần thử');
+          return;
+        }
+      } catch (e) {
+        _log('[MicroArt] LỖI (thử lại) khi đặt khung ban đầu: $e');
+      }
+    }
+    _log('[MicroArt] CẢNH BÁO: không đặt được vị trí khung ban đầu sau 12 lần thử');
+  }
+
+  Future<void> _runSession(int recStartMs) async {
     final prefs = await SharedPreferences.getInstance();
 
-    if (!started) {
-      print('[MicroArt] ghi màn hình không được cấp phép/thất bại, hủy phiên nhận diện');
-      await prefs.setBool('recording_cancelled', true);
+    int? confirmMs;
+    final deadline = DateTime.now().add(const Duration(seconds: _confirmTimeoutSec));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      await prefs.reload();
+      if (prefs.getBool('cancel_session') ?? false) {
+        await prefs.remove('cancel_session');
+        _log('[MicroArt] người dùng huỷ phiên nhận diện');
+        await _abortRecording();
+        return;
+      }
+      confirmMs = prefs.getInt('confirm_ms');
+      if (confirmMs != null) break;
+    }
+    if (confirmMs == null) {
+      _log('[MicroArt] quá $_confirmTimeoutSec giây chưa bấm ✓, huỷ phiên');
+      await _abortRecording();
+      return;
+    }
+    await prefs.remove('confirm_ms');
+
+    // Vùng mặt CỦA BẠN (dp + mật độ điểm ảnh) do overlay ghi cùng lúc với mốc xác nhận.
+    Map<String, dynamic>? zone;
+    final zoneRaw = prefs.getString('self_zone');
+    if (zoneRaw != null) {
+      try {
+        zone = jsonDecode(zoneRaw) as Map<String, dynamic>;
+      } catch (e) {
+        _log('[MicroArt] LỖI (bỏ qua) khi đọc self_zone: $e');
+      }
+      await prefs.remove('self_zone');
+    }
+
+    // Kích thước CẢ MÀN HÌNH (dp), lưu lúc bắt đầu phiên: server cần để đổi vị trí khung sang vị trí trong video — plugin
+    // ghi màn hình 1080x2424 thành video 720x1280 (khác tỉ lệ) nên video có viền đen và phải tính lại.
+    final double screenW = prefs.getDouble('screen_w_dp') ?? 0;
+    final double screenH = prefs.getDouble('screen_h_dp') ?? 0;
+
+    // Mốc cắt: giây (tính từ lúc bắt đầu ghi) mà đoạn phân tích bắt đầu = lúc bấm ✓ + một chút bỏ qua.
+    final trimStartSec = (confirmMs - recStartMs) / 1000.0 + _guardSec;
+    final stopAtMs = confirmMs + ((_guardSec + _captureSec + _tailBufferSec) * 1000).round();
+    final waitMs = stopAtMs - DateTime.now().millisecondsSinceEpoch;
+    if (waitMs > 0) {
+      await Future.delayed(Duration(milliseconds: waitMs));
+    }
+
+    String? videoPath;
+    try {
+      videoPath = await MoinsenScreenRecording.stopRecordScreen.timeout(const Duration(seconds: 20));
+    } catch (e) {
+      _log('[MicroArt] LỖI khi dừng ghi màn hình: $e');
+    }
+    _log('[MicroArt] đã dừng ghi màn hình, file: $videoPath, cắt từ giây ${trimStartSec.toStringAsFixed(2)}');
+    if (kDebugMode && zone != null) {
+      // Dán thẳng vào lệnh test trên máy tính để chạy lại đúng phiên này với ảnh gỡ lỗi:
+      final z = zone;
+      _log('[MicroArt] THAM SỐ TEST: --start ${trimStartSec.toStringAsFixed(2)} '
+          '--zone-dp ${(z['left'] as num).toStringAsFixed(1)},${(z['top'] as num).toStringAsFixed(1)},'
+          '${(z['width'] as num).toStringAsFixed(1)},${(z['height'] as num).toStringAsFixed(1)} '
+          '--screen-dp ${screenW.toStringAsFixed(2)},${screenH.toStringAsFixed(2)} --debug');
+    }
+
+    Map<String, dynamic> outcome;
+    if (videoPath == null || videoPath.isEmpty) {
+      outcome = {'error': 'Không lấy được video đã ghi. Hãy thử lại.'};
+    } else {
+      // Cắt đúng đoạn cần phân tích + nén trước khi gửi (nhẹ hơn nhiều, upload nhanh). Lỗi thì gửi file gốc.
+      final prepared = await _prepareUpload(videoPath, trimStartSec);
+      outcome = await _analyze(prepared.path, prepared.trimSec, zone, screenW, screenH);
+      if (prepared.isTemp) {
+        await _deleteQuietly(prepared.path);
+        try {
+          await VideoCompress.deleteAllCache();
+        } catch (_) {}
+      }
+      // Riêng tư: xoá video ngay sau khi gửi. Chỉ GIỮ LẠI khi chạy bản debug (flutter run) để lấy file
+      // test trên máy tính; bản release (dùng khi đi thi) luôn xoá.
+      if (kDebugMode) {
+        _log('[MicroArt] (debug) GIỮ lại file video để test: $videoPath');
+      } else {
+        await _deleteQuietly(videoPath);
+      }
+    }
+    await _publishOutcome(prefs, outcome);
+  }
+
+  // Cắt từ lúc bấm ✓ (làm tròn xuống giây nguyên, phần lẻ để server cắt nốt), giữ vừa đủ đoạn phân tích, giảm bitrate.
+  // LƯU Ý: ở package video_compress (đo thực tế trên máy này), tham số `duration` bị hiểu là số giây CẮT BỎ Ở CUỐI,
+  // không phải độ dài đoạn giữ lại. Vì vậy phải tự tính phần đuôi = tổng thời lượng - mốc đầu - đoạn cần giữ.
+  // Trả về file để gửi và mốc cắt còn lại cho server. Mọi lỗi/kết quả bất thường đều quay về gửi file gốc.
+  Future<_Prepared> _prepareUpload(String originalPath, double trimStartSec) async {
+    final fallback = _Prepared(originalPath, trimStartSec, false);
+    try {
+      final startInt = trimStartSec < 0 ? 0 : trimStartSec.floor();
+      final leftover = trimStartSec < 0 ? 0.0 : trimStartSec - startInt;
+      final keepSec = leftover + _captureSec + _tailBufferSec + 1.0; // đoạn cần giữ sau mốc cắt (dư 1s cho chắc)
+      final origBytes = await File(originalPath).length();
+
+      final srcInfo = await VideoCompress.getMediaInfo(originalPath);
+      final totalSec = (srcInfo.duration ?? 0) / 1000.0; // duration của MediaInfo tính bằng mili giây
+      if (totalSec <= 0 || startInt >= totalSec) {
+        _log('[MicroArt] nén video: không đọc được thời lượng (${totalSec}s), gửi file gốc');
+        return fallback;
+      }
+      final tailSec = (totalSec - startInt - keepSec).floor(); // số giây cắt bỏ ở cuối (làm tròn xuống = giữ dư)
+
+      final sw = Stopwatch()..start();
+      final info = await VideoCompress.compressVideo(
+        originalPath,
+        quality: VideoQuality.MediumQuality,
+        deleteOrigin: false,
+        startTime: startInt,
+        duration: tailSec > 0 ? tailSec : null,
+        includeAudio: false,
+        frameRate: 15,
+      ).timeout(const Duration(seconds: 60));
+      final newPath = info?.path;
+      if (newPath == null || newPath.isEmpty) {
+        _log('[MicroArt] nén video: không có kết quả, gửi file gốc');
+        return fallback;
+      }
+      final newBytes = await File(newPath).length();
+      final outInfo = await VideoCompress.getMediaInfo(newPath);
+      final outSec = (outInfo.duration ?? 0) / 1000.0;
+      _log('[MicroArt] nén video: ${(origBytes / 1048576).toStringAsFixed(2)}MB -> '
+          '${(newBytes / 1048576).toStringAsFixed(2)}MB, mất ${sw.elapsedMilliseconds}ms; '
+          'gốc ${totalSec.toStringAsFixed(1)}s, cắt từ giây $startInt, bỏ cuối ${tailSec}s, '
+          'còn ${outSec.toStringAsFixed(1)}s, lệch ${leftover.toStringAsFixed(2)}s');
+      // An toàn: file ra quá ngắn (không đủ đoạn phân tích) thì không dùng.
+      if (newBytes <= 0 || outSec < leftover + _captureSec + 0.5) {
+        _log('[MicroArt] nén video: kết quả quá ngắn/không hợp lệ, gửi file gốc');
+        await _deleteQuietly(newPath);
+        return fallback;
+      }
+      return _Prepared(newPath, leftover, true);
+    } catch (e) {
+      _log('[MicroArt] LỖI nén video (gửi file gốc): $e');
+      return fallback;
+    }
+  }
+
+  Future<void> _abortRecording() async {
+    try {
+      final path = await MoinsenScreenRecording.stopRecordScreen.timeout(const Duration(seconds: 20));
+      await _deleteQuietly(path);
+    } catch (e) {
+      _log('[MicroArt] LỖI (bỏ qua) khi dừng ghi lúc huỷ: $e');
+    }
+    try {
+      if (await FlutterOverlayWindow.isActive()) {
+        await FlutterOverlayWindow.closeOverlay();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _deleteQuietly(dynamic path) async {
+    try {
+      if (path is String && path.isNotEmpty) {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Gửi video (kèm mốc cắt và vùng mặt của bạn) lên máy chủ; trả về {'isReal','confidence','description'}
+  // hoặc {'error': '...'}.
+  Future<Map<String, dynamic>> _analyze(
+      String videoPath, double trimStartSec, Map<String, dynamic>? zone, double screenW, double screenH) async {
+    HttpClient? client;
+    try {
+      final bytes = await File(videoPath).readAsBytes();
+      final payload = <String, dynamic>{
+        'video_base64': base64Encode(bytes),
+        'trim_start_sec': trimStartSec < 0 ? 0.0 : trimStartSec,
+      };
+      if (zone != null) {
+        payload['exclude_zone_dp'] = {
+          'left': zone['left'],
+          'top': zone['top'],
+          'width': zone['width'],
+          'height': zone['height'],
+        };
+        payload['density'] = zone['density'];
+        if (screenW > 0 && screenH > 0) {
+          payload['screen_dp'] = {'width': screenW, 'height': screenH};
+        }
+      }
+      final body = utf8.encode(jsonEncode(payload));
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 20);
+      final req = await client.postUrl(Uri.parse(_serverUrl));
+      req.headers.contentType = ContentType.json;
+      req.contentLength = body.length;
+      req.add(body);
+      final resp = await req.close().timeout(const Duration(seconds: 120));
+      final text = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode != 200) {
+        return {'error': 'Máy chủ trả về lỗi (${resp.statusCode}). Hãy thử lại.'};
+      }
+      return _toUiResult(jsonDecode(text) as Map<String, dynamic>);
+    } on TimeoutException {
+      return {'error': 'Máy chủ phản hồi quá lâu. Kiểm tra mạng rồi thử lại.'};
+    } on SocketException {
+      return {'error': 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.'};
+    } catch (e) {
+      _log('[MicroArt] LỖI khi phân tích: $e');
+      return {'error': 'Có lỗi khi gửi video lên máy chủ.'};
+    } finally {
+      client?.close();
+    }
+  }
+
+  // Đổi JSON của máy chủ thành dữ liệu hiển thị. Máy chủ không có "final" (VD không thấy mặt) thì
+  // hiện lý do trong "notes".
+  Map<String, dynamic> _toUiResult(Map<String, dynamic> data) {
+    final dynamic fin = data['final'];
+    final dynamic notes = data['notes'];
+    final String noteText = notes is String ? notes : '';
+    if (fin is! Map) {
+      return {'error': noteText.isNotEmpty ? noteText : 'Máy chủ không trả về kết quả.'};
+    }
+    final bool isReal = fin['is_real'] == true;
+    final double percent = ((isReal ? fin['real_pct'] : fin['fake_pct']) as num).toDouble();
+    return {
+      'isReal': isReal,
+      'confidence': percent,
+      'description': noteText,
+    };
+  }
+
+  // Lưu lịch sử + thông báo (chỉ khi có kết quả thật) rồi báo cho overlay hiển thị.
+  Future<void> _publishOutcome(SharedPreferences prefs, Map<String, dynamic> outcome) async {
+    final dynamic errorText = outcome['error'];
+    if (errorText is String) {
+      await prefs.setString('pending_result', jsonEncode({'error': errorText}));
       return;
     }
 
-    await prefs.setBool('recording_started', true);
-    print('[MicroArt] đã báo recording_started cho overlay');
-
-    await Future.delayed(const Duration(seconds: 10));
-
-    try {
-      final videoPath = await MoinsenScreenRecording.stopRecordScreen;
-      print('[MicroArt] đã dừng ghi màn hình, file: $videoPath');
-    } catch (e) {
-      print('[MicroArt] LỖI khi dừng ghi màn hình: $e');
-    }
-
-    // TODO (Bước 4): upload video lên modal.com, nhận kết quả thật,
-    // xóa file local ngay sau khi gửi thành công. Hiện tại vẫn giữ file
-    // lại (chưa xóa) và dùng kết quả mock bên dưới.
-    await Future.delayed(const Duration(milliseconds: 1500));
-
-    final isReal = DateTime.now().second % 2 == 0;
-    final confidence = isReal ? 92.5 : 85.0;
-    final description = isReal
-        ? 'Phát hiện vi chuyển động tự nhiên. Xác suất người thật cao.'
-        : 'Không phát hiện vi chuyển động. Có dấu hiệu giả mạo.';
+    final bool isReal = outcome['isReal'] as bool;
+    final double confidence = outcome['confidence'] as double;
+    final String description = outcome['description'] as String;
 
     final historyId = await DatabaseHelper.instance.insertHistory(HistoryEntry(
       result: isReal ? 'REAL' : 'FAKE',
@@ -151,7 +544,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     ));
     await DatabaseHelper.instance.insertNotification(NotificationEntry(
       title: isReal ? 'Nhận diện hoàn tất' : 'Cảnh báo',
-      body: '${isReal ? "Kết quả: NGƯỜI THẬT" : "Phát hiện dấu hiệu giả mạo"} — $confidence%',
+      body: '${isReal ? "Kết quả: NGƯỜI THẬT" : "Phát hiện dấu hiệu giả mạo"} — ${confidence.toStringAsFixed(1)}%',
       timestamp: DateTime.now(),
     ));
 
@@ -161,38 +554,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       'description': description,
       'historyId': historyId,
     }));
-    print('[MicroArt] đã ghi pending_result vào SharedPreferences (historyId=$historyId)');
-  }
-
-  Future<void> _startRecognition() async {
-    try {
-      final granted = await FlutterOverlayWindow.isPermissionGranted();
-      if (!granted) {
-        final result = await FlutterOverlayWindow.requestPermission();
-        if (result != true) return;
-      }
-      final active = await FlutterOverlayWindow.isActive();
-      print('[MicroArt] _startRecognition: isActive = $active');
-      if (active) {
-        print('[MicroArt] _startRecognition: đang đóng overlay cũ...');
-        await FlutterOverlayWindow.closeOverlay();
-        print('[MicroArt] _startRecognition: đã đóng xong, đợi 300ms');
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-      print('[MicroArt] _startRecognition: gọi showOverlay()');
-      await FlutterOverlayWindow.showOverlay(
-        height: 64,
-        width: 64,
-        alignment: OverlayAlignment.centerLeft,
-        enableDrag: true,
-      );
-      print('[MicroArt] _startRecognition: showOverlay() xong');
-    } catch (e) {
-      print('[MicroArt] _startRecognition LỖI: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi: $e')));
-      }
-    }
+    _log('[MicroArt] đã ghi pending_result vào SharedPreferences (historyId=$historyId)');
   }
 
   @override
@@ -202,7 +564,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       appBar: AppBar(
         title: const Text('Nhận diện'),
         actions: [
-          IconButton(icon: const Icon(Icons.info_outline), onPressed: () {}, tooltip: 'Hướng dẫn'),
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () => TabNavigationController.requestedTabIndex.value = 3, // 3 = tab Hướng dẫn
+            tooltip: 'Hướng dẫn',
+          ),
         ],
       ),
       body: SafeArea(
@@ -237,21 +603,23 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                     const SizedBox(height: 12),
                     Text('Bắt đầu nhận diện', style: theme.textTheme.headlineMedium),
                     const SizedBox(height: 6),
-                    Text('Mở video call, sau đó nhấn nút bên dưới để bắt đầu quét khuôn mặt.', style: theme.textTheme.bodyMedium),
+                    Text('Đang trong cuộc gọi video, nhấn nút bên dưới để kiểm tra người bên kia có phải người thật không.',
+                        style: theme.textTheme.bodyMedium),
                   ],
                 ),
               ),
               const SizedBox(height: 32),
               Text('Các bước thực hiện', style: theme.textTheme.titleMedium),
               const SizedBox(height: 16),
-              const _StepItem(number: 1, text: 'Mở ứng dụng video call (Zalo, Zoom, Meet...)'),
-              const _StepItem(number: 2, text: 'Quay lại MicroArt và nhấn "Bắt đầu nhận diện"'),
-              const _StepItem(number: 3, text: 'Bấm vào bong bóng, kéo/chỉnh khung tới khuôn mặt cần xác thực'),
-              const _StepItem(number: 4, text: 'Chờ ~10 giây để nhận kết quả'),
+              const _StepItem(number: 1, text: 'Đang trong cuộc gọi video (Zalo, Messenger...), thoát ra màn hình chính để mở MicroAct'),
+              const _StepItem(number: 2, text: 'Nhấn "Bắt đầu nhận diện", đọc lưu ý và cho phép ghi màn hình'),
+              const _StepItem(number: 3, text: 'Quay lại cuộc gọi, bấm vào cửa sổ cuộc gọi nhỏ để phóng to toàn màn hình'),
+              const _StepItem(number: 4, text: 'Kéo khung xanh che đúng MẶT CỦA BẠN (ô nhỏ của bạn trong cuộc gọi), rồi bấm ✓'),
+              const _StepItem(number: 5, text: 'KHÔNG chạm vào màn hình, chờ ~10 giây để nhận kết quả'),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: _startRecognition,
+                  onPressed: () => _startRecognition(showWarning: true),
                   icon: const Icon(Icons.play_arrow_rounded, size: 22),
                   label: const Text('Bắt đầu nhận diện'),
                   style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
@@ -293,4 +661,12 @@ class _StepItem extends StatelessWidget {
       ),
     );
   }
+}
+
+// Video chuẩn bị để gửi: đường dẫn, mốc cắt còn lại cho server (giây), và có phải file tạm cần xoá không.
+class _Prepared {
+  final String path;
+  final double trimSec;
+  final bool isTemp;
+  const _Prepared(this.path, this.trimSec, this.isTemp);
 }

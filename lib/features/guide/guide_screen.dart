@@ -9,34 +9,57 @@ class GuideScreen extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Hướng dẫn & Cài đặt')),
+      appBar: AppBar(title: const Text('Hướng dẫn')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('Hướng dẫn sử dụng', style: theme.textTheme.titleMedium),
+          Text('Cách sử dụng', style: theme.textTheme.titleMedium),
           const SizedBox(height: 12),
           const _GuideSection(
             icon: Icons.videocam_outlined,
-            title: 'Bước 1 — Mở video call',
-            body: 'Mở bất kỳ ứng dụng video call nào (Zalo, Zoom, Google Meet...) và bắt đầu cuộc gọi.',
+            title: 'Bước 1 — Đang gọi video',
+            body: 'Gọi video với người cần kiểm tra trên Zalo, Messenger... như bình thường, '
+                'rồi thoát ra màn hình chính để mở MicroAct.',
           ),
           const SizedBox(height: 10),
           const _GuideSection(
             icon: Icons.touch_app_outlined,
-            title: 'Bước 2 — Kích hoạt nhận diện',
-            body: 'Quay lại MicroArt, nhấn "Bắt đầu nhận diện". Cấp quyền overlay và ghi màn hình khi được yêu cầu.',
+            title: 'Bước 2 — Bắt đầu nhận diện',
+            body: 'Nhấn "Bắt đầu nhận diện", đọc lưu ý và cho phép ghi màn hình. '
+                'Lần đầu, app còn xin quyền hiển thị trên các ứng dụng khác.',
           ),
           const SizedBox(height: 10),
           const _GuideSection(
             icon: Icons.face_outlined,
-            title: 'Bước 3 — Chọn khuôn mặt',
-            body: 'Vẽ khung quanh khuôn mặt cần xác thực, hoặc chạm vào khuôn mặt được tự động phát hiện.',
+            title: 'Bước 3 — Che mặt của bạn',
+            body: 'Quay lại cuộc gọi, phóng to cuộc gọi toàn màn hình. Kéo khung xanh che đúng MẶT CỦA BẠN '
+                '(ô nhỏ của bạn trong cuộc gọi), rồi bấm ✓. Hệ thống bỏ qua vùng này và chỉ kiểm tra '
+                'khuôn mặt còn lại.',
           ),
           const SizedBox(height: 10),
           const _GuideSection(
             icon: Icons.analytics_outlined,
-            title: 'Bước 4 — Nhận kết quả',
-            body: 'Sau ~10 giây, kết quả hiện ngay trên màn hình: người thật hay giả mạo, kèm % độ tin cậy.',
+            title: 'Bước 4 — Giữ yên khoảng 10 giây',
+            body: 'KHÔNG chạm vào màn hình. Kết quả hiện ngay trong bong bóng: NGƯỜI THẬT hoặc GIẢ MẠO, '
+                'kèm điểm %. Bấm "Xem chi tiết" để xem lại trong mục Lịch sử.',
+          ),
+          const SizedBox(height: 28),
+          Text('Lưu ý', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 12),
+          const _GuideSection(
+            icon: Icons.lock_outline,
+            title: 'Quyền riêng tư',
+            body: 'MicroAct gửi đoạn video 10 giây vừa ghi lên máy chủ để phân tích. Video chỉ dùng tạm: '
+                'được xoá khỏi máy sau khi gửi và máy chủ cũng xoá sau khi phân tích. Ứng dụng không lưu '
+                'ảnh hay video nào; chỉ kết quả (thật/giả, điểm, mô tả, thời gian) được lưu trong Lịch sử. '
+                'Hãy xin phép người bên kia trước khi kiểm tra.',
+          ),
+          const SizedBox(height: 10),
+          const _GuideSection(
+            icon: Icons.info_outline,
+            title: 'Kết quả chỉ để tham khảo',
+            body: 'Đây là bản thử nghiệm của một đề tài khoa học. Kết quả có thể sai, '
+                'không dùng làm bằng chứng pháp lý.',
           ),
           const SizedBox(height: 28),
           Text('Về ứng dụng', style: theme.textTheme.titleMedium),
@@ -47,7 +70,7 @@ class GuideScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('MicroArt v1.0.0', style: theme.textTheme.titleMedium),
+                  Text('MicroAct v1.0.0', style: theme.textTheme.titleMedium),
                   const SizedBox(height: 4),
                   Text(
                     'Micro-motion Analysis & Response Tracking\nXác thực người thật bằng vi chuyển động khuôn mặt.',

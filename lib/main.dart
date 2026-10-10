@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -37,7 +38,13 @@ void overlayMain() {
   ));
 }
 
-enum _Stage { idle, framing, recording, processing, result, resultExpanded }
+// Luồng (app đã ghi màn hình từ lúc người dùng cấp quyền):
+//   framing  : khung xanh lá — người dùng phóng to cuộc gọi, kéo khung che MẶT CỦA CHÍNH MÌNH (ô tự xem),
+//              rồi bấm ✓. Server BỎ QUA mọi khuôn mặt nằm trong khung này (vì một số app như Messenger có thể
+//              hoán đổi ô lớn/nhỏ, nên không thể chọn mặt theo kích thước). ✓ cũng là mốc "Xác nhận".
+//   recording: bong bóng đếm ngược 10 giây nằm NGAY TRONG vùng khung (vùng đã bị loại nên không che đối tượng)
+//   processing -> result -> resultExpanded, hoặc error nếu có lỗi
+enum _Stage { framing, recording, processing, result, resultExpanded, error }
 
 class _RecognitionOverlay extends StatefulWidget {
   const _RecognitionOverlay();
@@ -47,143 +54,123 @@ class _RecognitionOverlay extends StatefulWidget {
 }
 
 class _RecognitionOverlayState extends State<_RecognitionOverlay> {
-  _Stage _stage = _Stage.idle;
+  _Stage _stage = _Stage.framing;
+  bool _confirming = false;
+
   double _frameSize = 180;
-  static const double _minFrame = 120;
+  static const double _minFrame = 160; // phải >= chiều rộng bong bóng (150) để bong bóng nằm gọn trong vùng khung
   static const double _maxFrame = 360;
+  static const int _pillWidth = 150;
+  static const int _pillHeight = 64;
+
+  double _screenW = 0;
+  double _screenH = 0;
 
   int _secondsLeft = 10;
-  bool _waitingForRecordingStart = false;
   bool _isReal = true;
   double _confidence = 0;
   String _description = '';
   int? _historyId;
 
   int _processingCaptionIndex = 0;
-  static const List<String> _processingCaptions = ['Đang tải lên...', 'Đang xử lý...', 'Đang nhận kết quả...'];
+  static const List<String> _processingCaptions = ['Đang tải lên...', 'Đang xử lý...', 'Đang phân tích...'];
 
   Timer? _countdownTimer;
   Timer? _captionTimer;
   Timer? _resultPollTimer;
-  Timer? _recordingStartPollTimer;
 
   @override
   void dispose() {
     _countdownTimer?.cancel();
     _captionTimer?.cancel();
     _resultPollTimer?.cancel();
-    _recordingStartPollTimer?.cancel();
     super.dispose();
   }
 
-  // resizeOverlay không tự giữ nguyên vị trí — tự lấy vị trí hiện tại,
-  // resize xong thì set lại đúng vị trí đó để tránh giật/nhảy.
-  Future<void> _resizeKeepingPosition(int width, int height) async {
-    final pos = await FlutterOverlayWindow.getOverlayPosition();
-    await FlutterOverlayWindow.resizeOverlay(width, height, true);
-    await FlutterOverlayWindow.moveOverlay(OverlayPosition(pos.x, pos.y));
+  // Kích thước màn hình (dp) do app chính ghi vào SharedPreferences — overlay không tự biết được vì
+  // "màn hình" của nó chỉ là cửa sổ nhỏ của chính nó.
+  Future<void> _loadScreenSize() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    _screenW = prefs.getDouble('screen_w_dp') ?? 0;
+    _screenH = prefs.getDouble('screen_h_dp') ?? 0;
   }
 
-  // QUAN TRỌNG: resize cửa sổ XONG rồi mới setState đổi giao diện — nếu
-  // đổi giao diện trước, nội dung mới (cần nhiều chỗ hơn) bị nhồi vào
-  // cửa sổ cũ còn nhỏ trong 1 khung hình, Flutter báo lỗi tràn khung
-  // (ô vằn vàng-đen) chớp nhoáng trước khi resize kịp hoàn tất.
-  Future<void> _openFraming() async {
-    await _resizeKeepingPosition(_frameSize.toInt(), _frameSize.toInt());
-    if (!mounted) return;
-    setState(() => _stage = _Stage.framing);
+  // Kích thước/vị trí overlay tính bằng dp (đã kiểm tra trong mã nguồn plugin: dpToPx/pxToDp), gốc toạ độ là
+  // góc trên-trái màn hình khi dùng OverlayAlignment.topLeft. resizeOverlay không tự giữ nguyên vị trí nên tự
+  // lấy vị trí hiện tại rồi đặt lại; keepOnScreen kéo cửa sổ vào trong màn hình nếu resize làm nó tràn ra ngoài.
+  Future<void> _resizeKeepingPosition(int width, int height, {bool keepOnScreen = false}) async {
+    final pos = await FlutterOverlayWindow.getOverlayPosition();
+    await FlutterOverlayWindow.resizeOverlay(width, height, true);
+    double x = pos.x;
+    double y = pos.y;
+    if (keepOnScreen && _screenW > 0 && _screenH > 0) {
+      x = math.min(math.max(x, 0.0), math.max(0.0, _screenW - width));
+      y = math.min(math.max(y, 0.0), math.max(0.0, _screenH - height));
+    }
+    await FlutterOverlayWindow.moveOverlay(OverlayPosition(x, y));
   }
 
   Future<void> _changeFrameSize(double delta) async {
-    final next = (_frameSize + delta).clamp(_minFrame, _maxFrame);
+    final next = (_frameSize + delta).clamp(_minFrame, _maxFrame).toDouble();
     if (next == _frameSize) return;
+    await _loadScreenSize();
     setState(() => _frameSize = next);
-    await _resizeKeepingPosition(_frameSize.toInt(), _frameSize.toInt());
+    await _resizeKeepingPosition(next.toInt(), next.toInt(), keepOnScreen: true);
   }
 
-  Future<void> _confirmFrame() async {
+  // Bấm ✓: ghi lại VÙNG MẶT CỦA BẠN (vị trí + kích thước khung, đơn vị dp, kèm mật độ điểm ảnh để server đổi
+  // sang pixel) và MỐC THỜI GIAN xác nhận (app cắt bỏ phần video trước mốc này), rồi thu khung lại thành bong
+  // bóng đếm ngược — bong bóng giữ nguyên góc trên-trái của khung nên nằm gọn trong vùng khung.
+  Future<void> _confirm() async {
+    if (_confirming) return;
+    _confirming = true;
     final pos = await FlutterOverlayWindow.getOverlayPosition();
+    final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('recording_started'); // dọn rác cũ trước khi chờ tín hiệu mới
-    await prefs.setString('pending_rect', jsonEncode({
+    await prefs.setString('self_zone', jsonEncode({
       'left': pos.x,
       'top': pos.y,
       'width': _frameSize,
       'height': _frameSize,
+      'density': dpr,
     }));
-
-    await _resizeKeepingPosition(64, 64);
+    await prefs.setInt('confirm_ms', DateTime.now().millisecondsSinceEpoch);
+    await _resizeKeepingPosition(_pillWidth, _pillHeight);
     if (!mounted) return;
     setState(() {
       _stage = _Stage.recording;
-      _waitingForRecordingStart = true;
       _secondsLeft = 10;
     });
-
-    _waitForRecordingStart();
+    _startCountdown();
   }
 
-  // Chờ máy chính báo đã gọi xong startRecordScreen (thành công hay lỗi
-  // đều tính), mới bắt đầu đếm ngược 10s thật. Có timeout 5s dự phòng để
-  // overlay không bao giờ đứng hình vĩnh viễn nếu lỡ mất tín hiệu.
-  void _waitForRecordingStart() {
-    // Chờ tối đa 60s, KHÔNG phải 5s: tín hiệu recording_started chỉ được
-    // báo SAU KHI người dùng đọc và bấm "Bắt đầu" trên hộp thoại xin quyền
-    // ghi màn hình của hệ thống (Android 14+ hỏi lại MỖI LẦN ghi), nên cần
-    // đủ thời gian cho người thật thao tác. 60s chỉ là lưới an toàn.
-    final deadline = DateTime.now().add(const Duration(seconds: 60));
-
-    _recordingStartPollTimer?.cancel();
-    _recordingStartPollTimer = Timer.periodic(const Duration(milliseconds: 300), (t) async {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-
-      final cancelled = prefs.getBool('recording_cancelled') ?? false;
-      if (cancelled) {
-        t.cancel();
-        await prefs.remove('recording_cancelled');
-        print('[MicroArt] overlay: ghi màn hình bị hủy/từ chối, đóng overlay');
-        _resetToIdle();
-        await FlutterOverlayWindow.closeOverlay();
-        return;
-      }
-
-      final started = prefs.getBool('recording_started') ?? false;
-      if (started) {
-        t.cancel();
-        await prefs.remove('recording_started');
-        print('[MicroArt] overlay: nhận recording_started, bắt đầu đếm ngược');
-        if (!mounted) return;
-        setState(() => _waitingForRecordingStart = false);
-        _startCountdown();
-        return;
-      }
-
-      if (DateTime.now().isAfter(deadline)) {
-        t.cancel();
-        print('[MicroArt] overlay: chờ quá 60s không có tín hiệu ghi màn hình, đóng overlay');
-        _resetToIdle();
-        await FlutterOverlayWindow.closeOverlay();
-      }
-    });
+  Future<void> _cancel() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('cancel_session', true);
+    _resetToFraming();
+    await FlutterOverlayWindow.closeOverlay();
   }
 
   void _startCountdown() {
     _countdownTimer?.cancel();
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      setState(() {
-        if (_secondsLeft > 1) {
-          _secondsLeft--;
-        } else {
-          t.cancel();
-          _switchToProcessing();
-        }
-      });
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (_secondsLeft > 1) {
+        setState(() => _secondsLeft--);
+      } else {
+        t.cancel();
+        _switchToProcessing();
+      }
     });
   }
 
+  // Bong bóng giữ nguyên kích thước (150x64) qua các bước đếm ngược/xử lý/kết quả để luôn nằm trong vùng khung
+  // (video vẫn đang được ghi thêm khoảng 1.5 giây sau khi hết đếm ngược).
   Future<void> _switchToProcessing() async {
-    await _resizeKeepingPosition(220, 64);
     if (!mounted) return;
     setState(() {
       _stage = _Stage.processing;
@@ -192,6 +179,10 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
 
     _captionTimer?.cancel();
     _captionTimer = Timer.periodic(const Duration(milliseconds: 1300), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
       if (_processingCaptionIndex < _processingCaptions.length - 1) {
         setState(() => _processingCaptionIndex++);
       } else {
@@ -210,6 +201,19 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
       _captionTimer?.cancel();
       final map = jsonDecode(raw) as Map<String, dynamic>;
       if (!mounted) return;
+
+      final errorText = map['error'];
+      if (errorText is String) {
+        await _loadScreenSize();
+        await _resizeKeepingPosition(280, 150, keepOnScreen: true);
+        if (!mounted) return;
+        setState(() {
+          _stage = _Stage.error;
+          _description = errorText;
+        });
+        return;
+      }
+
       setState(() {
         _stage = _Stage.result;
         _isReal = map['isReal'] as bool;
@@ -220,37 +224,36 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
     });
   }
 
+  // Luôn resize cửa sổ XONG rồi mới setState đổi giao diện — nếu đổi giao diện trước, nội dung
+  // mới (cần nhiều chỗ hơn) bị nhồi vào cửa sổ cũ còn nhỏ, Flutter báo tràn khung chớp nhoáng.
   Future<void> _expandResult() async {
-    await _resizeKeepingPosition(280, 200);
+    await _loadScreenSize();
+    await _resizeKeepingPosition(280, 200, keepOnScreen: true);
     if (!mounted) return;
     setState(() => _stage = _Stage.resultExpanded);
   }
 
+  // "Nhận diện lại": báo app chính bắt đầu phiên mới (xin quyền ghi màn hình lại), rồi đóng overlay.
   Future<void> _retry() async {
-    await _resizeKeepingPosition(180, 180);
-    if (!mounted) return;
-    setState(() {
-      _stage = _Stage.framing;
-      _frameSize = 180;
-    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('pending_action', 'retry');
+    _resetToFraming();
+    await FlutterOverlayWindow.closeOverlay();
   }
 
-  // Reset toàn bộ state về idle trước khi đóng — bắt buộc, vì
-  // flutter_overlay_window TÁI SỬ DỤNG cùng 1 engine cho các lần
-  // showOverlay() sau, không gọi lại overlayMain()/runApp() từ đầu.
-  // Nếu không reset ở đây, lần mở overlay kế tiếp sẽ vẫn giữ _stage cũ
-  // (ví dụ resultExpanded) nhưng bị nhồi vào khung 64x64 của idle —
-  // gây vỡ layout, bấm không ăn (lỗi đã gặp thực tế).
-  void _resetToIdle() {
+  // Reset toàn bộ state về framing trước khi đóng — bắt buộc, vì flutter_overlay_window
+  // TÁI SỬ DỤNG cùng 1 engine cho các lần showOverlay() sau, không gọi lại overlayMain()/runApp().
+  // Nếu không reset ở đây, lần mở overlay kế tiếp vẫn giữ _stage cũ (ví dụ resultExpanded)
+  // nhưng bị nhồi vào cửa sổ khung — vỡ layout, bấm không ăn.
+  void _resetToFraming() {
     _countdownTimer?.cancel();
     _captionTimer?.cancel();
     _resultPollTimer?.cancel();
-    _recordingStartPollTimer?.cancel();
     if (!mounted) return;
     setState(() {
-      _stage = _Stage.idle;
+      _stage = _Stage.framing;
+      _confirming = false;
       _frameSize = 180;
-      _waitingForRecordingStart = false;
       _secondsLeft = 10;
       _processingCaptionIndex = 0;
       _historyId = null;
@@ -263,12 +266,12 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
     if (_historyId != null) {
       await prefs.setInt('pending_action_id', _historyId!);
     }
-    _resetToIdle();
+    _resetToFraming();
     await FlutterOverlayWindow.closeOverlay();
   }
 
   Future<void> _close() async {
-    _resetToIdle();
+    _resetToFraming();
     await FlutterOverlayWindow.closeOverlay();
   }
 
@@ -276,27 +279,11 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
   Widget build(BuildContext context) {
     Widget content;
     switch (_stage) {
-      case _Stage.idle:
-        content = GestureDetector(
-          onTap: _openFraming,
-          child: const Center(
-            child: Icon(Icons.face_retouching_natural, color: Colors.white, size: 26),
-          ),
-        );
-        break;
       case _Stage.framing:
         content = _buildFraming();
         break;
       case _Stage.recording:
-        content = Center(
-          child: _waitingForRecordingStart
-              ? const SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
-          )
-              : Text('$_secondsLeft', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
-        );
+        content = _buildRecording();
         break;
       case _Stage.processing:
       case _Stage.result:
@@ -305,10 +292,13 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
       case _Stage.resultExpanded:
         content = _buildPanel();
         break;
+      case _Stage.error:
+        content = _buildError();
+        break;
     }
 
-    final isCircle = _stage == _Stage.idle || _stage == _Stage.recording;
     final isFraming = _stage == _Stage.framing;
+    final isBox = _stage == _Stage.resultExpanded || _stage == _Stage.error;
 
     return GestureDetector(
       onTap: (_stage == _Stage.result) ? _expandResult : null,
@@ -316,11 +306,9 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
         decoration: BoxDecoration(
           color: isFraming ? Colors.transparent : const Color(0xFF1A237E),
           border: isFraming ? Border.all(color: const Color(0xFF43A047), width: 2) : null,
-          borderRadius: BorderRadius.circular(
-            _stage == _Stage.resultExpanded ? 20 : (isCircle ? 32 : 16),
-          ),
+          borderRadius: BorderRadius.circular(isBox ? 20 : 16),
         ),
-        padding: (isFraming || isCircle) ? EdgeInsets.zero : const EdgeInsets.all(12),
+        padding: isFraming ? EdgeInsets.zero : const EdgeInsets.all(12),
         child: content,
       ),
     );
@@ -330,6 +318,29 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
     return Stack(
       children: [
         Positioned(
+          top: 4,
+          left: 4,
+          right: 32,
+          child: Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: const Color(0xB3000000),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Text(
+              'Phóng to cuộc gọi, kéo khung này che MẶT BẠN rồi bấm ✓',
+              style: TextStyle(color: Colors.white, fontSize: 10, height: 1.2),
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ),
+        Positioned(
+          top: 4,
+          right: 4,
+          child: _roundIconButton(Icons.close, _cancel, bg: const Color(0xFFC62828), size: 24),
+        ),
+        Positioned(
           bottom: 4,
           left: 0,
           right: 0,
@@ -338,7 +349,7 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
             children: [
               _roundIconButton(Icons.remove, () => _changeFrameSize(-20)),
               const SizedBox(width: 8),
-              _roundIconButton(Icons.check, _confirmFrame, bg: const Color(0xFF43A047)),
+              _roundIconButton(Icons.check, _confirm, bg: const Color(0xFF43A047)),
               const SizedBox(width: 8),
               _roundIconButton(Icons.add, () => _changeFrameSize(20)),
             ],
@@ -348,15 +359,72 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
     );
   }
 
-  Widget _roundIconButton(IconData icon, VoidCallback onTap, {Color bg = const Color(0xFF1A237E)}) {
+  Widget _roundIconButton(IconData icon, VoidCallback onTap, {Color bg = const Color(0xFF1A237E), double size = 32}) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 32,
-        height: 32,
+        width: size,
+        height: size,
         decoration: BoxDecoration(color: bg, shape: BoxShape.circle),
-        child: Icon(icon, color: Colors.white, size: 18),
+        child: Icon(icon, color: Colors.white, size: size * 0.56),
       ),
+    );
+  }
+
+  Widget _buildRecording() {
+    return Row(
+      children: [
+        Text('$_secondsLeft', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 24)),
+        const SizedBox(width: 10),
+        const Expanded(
+          child: Text(
+            'Đừng chạm\nmàn hình',
+            style: TextStyle(color: Colors.white70, fontSize: 11, height: 1.2),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildError() {
+    const warn = Color(0xFFFFB300);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.error_outline, color: warn, size: 22),
+            SizedBox(width: 8),
+            Text('Chưa nhận diện được', style: TextStyle(color: warn, fontWeight: FontWeight.w700, fontSize: 13)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(_description, style: const TextStyle(color: Colors.white70, fontSize: 11), maxLines: 4, overflow: TextOverflow.ellipsis),
+        const Spacer(),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _retry,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: Colors.white38),
+                  minimumSize: const Size.fromHeight(30),
+                ),
+                child: const Text('Thử lại', style: TextStyle(fontSize: 12)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: TextButton(
+                onPressed: _close,
+                style: TextButton.styleFrom(foregroundColor: Colors.white70, minimumSize: const Size.fromHeight(30)),
+                child: const Text('Đóng', style: TextStyle(fontSize: 12)),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -369,11 +437,11 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
             height: 20,
             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               _processingCaptions[_processingCaptionIndex],
-              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -384,14 +452,14 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
     return Row(
       children: [
         Icon(_isReal ? Icons.check_circle : Icons.cancel, color: color, size: 30),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(_isReal ? 'NGƯỜI THẬT' : 'GIẢ MẠO', style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700)),
-              Text('$_confidence%', style: const TextStyle(color: Colors.white70, fontSize: 10)),
+              Text('${_confidence.toStringAsFixed(1)}%', style: const TextStyle(color: Colors.white70, fontSize: 10)),
             ],
           ),
         ),
@@ -411,7 +479,7 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
             const SizedBox(width: 8),
             Text(_isReal ? 'NGƯỜI THẬT' : 'GIẢ MẠO', style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 14)),
             const Spacer(),
-            Text('$_confidence%', style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 16)),
+            Text('${_confidence.toStringAsFixed(1)}%', style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 16)),
           ],
         ),
         const SizedBox(height: 6),

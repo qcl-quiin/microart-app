@@ -29,9 +29,11 @@ class RecognitionScreen extends StatefulWidget {
   State<RecognitionScreen> createState() => _RecognitionScreenState();
 }
 
-class _RecognitionScreenState extends State<RecognitionScreen> {
+class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindingObserver {
   Timer? _pollTimer;
   bool _busy = false;
+  // Quyền "hiển thị trên ứng dụng khác" (overlay). null = đang kiểm tra; false = chưa cấp -> hiện nút Cấp quyền, khoá nút Nhận diện.
+  bool? _overlayGranted;
 
   static const MethodChannel _nativeChannel = MethodChannel('microart/native');
 
@@ -53,6 +55,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refreshOverlayPermission();
     _resetStaleOverlayState();
     _pollTimer = Timer.periodic(const Duration(milliseconds: 400), (t) => _checkPending());
   }
@@ -80,8 +84,32 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
     super.dispose();
+  }
+
+  // Quay lại app (VD sau khi cấp quyền ở màn hình cài đặt) thì kiểm tra lại quyền ngay.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refreshOverlayPermission();
+  }
+
+  Future<void> _refreshOverlayPermission() async {
+    bool granted = false;
+    try {
+      granted = await FlutterOverlayWindow.isPermissionGranted();
+    } catch (e) {
+      _log('[MicroArt] LỖI khi kiểm tra quyền overlay: $e');
+    }
+    if (!mounted || _overlayGranted == granted) return;
+    setState(() => _overlayGranted = granted);
+  }
+
+  // Mở màn hình cấp quyền. KHÔNG chờ kết quả (plugin không trả về khi người dùng rời sang cài đặt);
+  // khi quay lại app, didChangeAppLifecycleState sẽ kiểm tra lại.
+  void _requestOverlayPermission() {
+    unawaited(FlutterOverlayWindow.requestPermission());
   }
 
   // Chỉ còn xử lý hành động do overlay gửi sang (xem chi tiết / nhận diện lại).
@@ -193,8 +221,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
       final granted = await FlutterOverlayWindow.isPermissionGranted();
       if (!granted) {
-        final result = await FlutterOverlayWindow.requestPermission();
-        if (result != true) return;
+        // Không xin quyền ở đây nữa (chờ kết quả sẽ làm kẹt cờ _busy); nút "Cấp quyền" trên màn hình lo việc đó.
+        if (mounted) setState(() => _overlayGranted = false);
+        _showSnack('Cần cấp quyền hiển thị trên ứng dụng khác trước.');
+        return;
       }
 
       // Dọn tín hiệu cũ và overlay cũ (nếu còn) trước khi bắt đầu phiên mới.
@@ -632,12 +662,24 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: () => _startRecognition(showWarning: true),
+                  onPressed: _overlayGranted == true ? () => _startRecognition(showWarning: true) : null,
                   icon: const Icon(Icons.play_arrow_rounded, size: 22),
                   label: const Text('Bắt đầu nhận diện'),
                   style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
                 ),
               ),
+              if (_overlayGranted == false) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _requestOverlayPermission,
+                    icon: const Icon(Icons.lock_open_rounded, size: 20),
+                    label: const Text('Cấp quyền để ứng dụng hoạt động'),
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
             ],
           ),

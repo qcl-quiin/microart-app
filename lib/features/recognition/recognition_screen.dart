@@ -43,6 +43,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   static const double _guardSec = 0.8; // bỏ 0.8s đầu sau khi bấm ✓ (thao tác bấm, khung thu lại thành bong bóng)
   static const double _captureSec = 10.0; // đoạn phân tích
   static const double _tailBufferSec = 0.7; // ghi thêm một chút cho an toàn khi sai lệch đồng hồ
+  static const int _skipCompressBytes = 10 * 1024 * 1024; // file gốc nhỏ hơn mức này thì KHÔNG nén (nén tốn 20-30s, tiết kiệm ít)
+  static const double _minAnalysisSec = 8.0; // video nén có ít hơn ngần này giây phân tích thì không dùng (gửi file gốc)
   static const int _confirmTimeoutSec = 90; // quá lâu không bấm ✓ thì huỷ (file ghi sẽ phình to)
 
   // Kích thước khung chọn mặt ban đầu (dp) — phải khớp _frameSize mặc định bên overlay (main.dart).
@@ -390,6 +392,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       final leftover = trimStartSec < 0 ? 0.0 : trimStartSec - startInt;
       final keepSec = leftover + _captureSec + _tailBufferSec + 1.0; // đoạn cần giữ sau mốc cắt (dư 1s cho chắc)
       final origBytes = await File(originalPath).length();
+      if (origBytes <= _skipCompressBytes) {
+        _log('[MicroArt] bỏ qua bước nén: file gốc ${(origBytes / 1048576).toStringAsFixed(2)}MB <= ${_skipCompressBytes ~/ 1048576}MB; '
+            'server tự cắt từ giây ${trimStartSec.toStringAsFixed(2)}');
+        return fallback;
+      }
 
       final srcInfo = await VideoCompress.getMediaInfo(originalPath);
       final totalSec = (srcInfo.duration ?? 0) / 1000.0; // duration của MediaInfo tính bằng mili giây
@@ -402,7 +409,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       final sw = Stopwatch()..start();
       final info = await VideoCompress.compressVideo(
         originalPath,
-        quality: VideoQuality.MediumQuality,
+        quality: VideoQuality.Res1280x720Quality, // giữ nguyên 720x1280 của video ghi (không co thêm)
         deleteOrigin: false,
         startTime: startInt,
         duration: tailSec > 0 ? tailSec : null,
@@ -422,7 +429,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           'gốc ${totalSec.toStringAsFixed(1)}s, cắt từ giây $startInt, bỏ cuối ${tailSec}s, '
           'còn ${outSec.toStringAsFixed(1)}s, lệch ${leftover.toStringAsFixed(2)}s');
       // An toàn: file ra quá ngắn (không đủ đoạn phân tích) thì không dùng.
-      if (newBytes <= 0 || outSec < leftover + _captureSec + 0.5) {
+      if (newBytes <= 0 || outSec < leftover + _minAnalysisSec) {
         _log('[MicroArt] nén video: kết quả quá ngắn/không hợp lệ, gửi file gốc');
         await _deleteQuietly(newPath);
         return fallback;
@@ -484,16 +491,22 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       }
       final body = utf8.encode(jsonEncode(payload));
       client = HttpClient()..connectionTimeout = const Duration(seconds: 20);
+      final sw = Stopwatch()..start();
       final req = await client.postUrl(Uri.parse(_serverUrl));
       req.headers.contentType = ContentType.json;
       req.contentLength = body.length;
       req.add(body);
-      final resp = await req.close().timeout(const Duration(seconds: 120));
+      final resp = await req.close().timeout(const Duration(seconds: 200));
       final text = await resp.transform(utf8.decoder).join();
       if (resp.statusCode != 200) {
         return {'error': 'Máy chủ trả về lỗi (${resp.statusCode}). Hãy thử lại.'};
       }
-      return _toUiResult(jsonDecode(text) as Map<String, dynamic>);
+      final data = jsonDecode(text) as Map<String, dynamic>;
+      final timing = data['timing_debug'];
+      final srvSec = timing is Map ? timing['total_server_sec'] : null;
+      _log('[MicroArt] gửi ${(body.length / 1048576).toStringAsFixed(2)}MB + chờ server: ${sw.elapsedMilliseconds}ms; '
+          'server tự báo xử lý: ${srvSec}s');
+      return _toUiResult(data);
     } on TimeoutException {
       return {'error': 'Máy chủ phản hồi quá lâu. Kiểm tra mạng rồi thử lại.'};
     } on SocketException {

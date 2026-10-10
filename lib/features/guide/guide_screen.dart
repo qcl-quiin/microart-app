@@ -32,34 +32,43 @@ class GuideScreen extends StatelessWidget {
           const _GuideSection(
             icon: Icons.face_outlined,
             title: 'Bước 3 — Che mặt của bạn',
-            body: 'Quay lại cuộc gọi, phóng to cuộc gọi toàn màn hình. Kéo khung xanh che đúng MẶT CỦA BẠN '
-                '(ô nhỏ của bạn trong cuộc gọi), rồi bấm ✓. Hệ thống bỏ qua vùng này và chỉ kiểm tra '
+            body: 'Quay lại cuộc gọi, phóng to cuộc gọi toàn màn hình. Kéo khung xanh vào đúng khu vực MẶT CỦA BẠN '
+                '(camera của bạn trong cuộc gọi), rồi bấm ✓. Hệ thống bỏ qua vùng này và chỉ kiểm tra '
                 'khuôn mặt còn lại.',
           ),
           const SizedBox(height: 10),
           const _GuideSection(
             icon: Icons.analytics_outlined,
             title: 'Bước 4 — Giữ yên khoảng 10 giây',
-            body: 'KHÔNG chạm vào màn hình. Kết quả hiện ngay trong bong bóng: NGƯỜI THẬT hoặc GIẢ MẠO, '
-                'kèm điểm %. Bấm "Xem chi tiết" để xem lại trong mục Lịch sử.',
+            body: 'KHÔNG chạm vào màn hình trong quá trình đếm ngược. Kết quả hiện ngay trong bong bóng: NGƯỜI THẬT hoặc GIẢ MẠO, '
+                'kèm độ chính xác %. Bấm "Xem chi tiết" để xem lại trong mục Lịch sử.',
           ),
           const SizedBox(height: 28),
           Text('Lưu ý', style: theme.textTheme.titleMedium),
           const SizedBox(height: 12),
           const _GuideSection(
+            icon: Icons.lightbulb_outline,
+            title: 'Ứng dụng giúp gì cho bạn?',
+            body: 'MicroAct giúp bạn nhận biết nhanh người trong cuộc gọi video là người thật hay khuôn mặt '
+                'bị làm giả (deepfake, ghép mặt). Chỉ cần khoảng 10 giây, không cần cài đặt gì cho người bên kia '
+                'và dùng được trên các ứng dụng gọi video như Zalo, Messenger. Hiệu quả nhất khi bên kia chỉ có '
+                '1 người, mặt rõ và đủ sáng.',
+          ),
+          const SizedBox(height: 10),
+          const _GuideSection(
             icon: Icons.lock_outline,
             title: 'Quyền riêng tư',
             body: 'MicroAct gửi đoạn video 10 giây vừa ghi lên máy chủ để phân tích. Video chỉ dùng tạm: '
                 'được xoá khỏi máy sau khi gửi và máy chủ cũng xoá sau khi phân tích. Ứng dụng không lưu '
-                'ảnh hay video nào; chỉ kết quả (thật/giả, điểm, mô tả, thời gian) được lưu trong Lịch sử. '
-                'Hãy xin phép người bên kia trước khi kiểm tra.',
+                'ảnh hay video nào; chỉ kết quả (thật/giả, độ chính xác, mô tả, thời gian) được lưu trong Lịch sử.',
           ),
           const SizedBox(height: 10),
           const _GuideSection(
-            icon: Icons.info_outline,
-            title: 'Kết quả chỉ để tham khảo',
-            body: 'Đây là bản thử nghiệm của một đề tài khoa học. Kết quả có thể sai, '
-                'không dùng làm bằng chứng pháp lý.',
+            icon: Icons.verified_user_outlined,
+            title: 'Cách đọc kết quả',
+            body: 'MicroAct phân tích vi chuyển động khuôn mặt trong đoạn video 10 giây và đưa ra xác suất '
+                'người thật hoặc giả mạo. Ánh sáng, độ nét và chất lượng mạng của cuộc gọi có thể ảnh hưởng '
+                'đến kết quả.',
           ),
           const SizedBox(height: 28),
           Text('Về ứng dụng', style: theme.textTheme.titleMedium),
@@ -73,7 +82,7 @@ class GuideScreen extends StatelessWidget {
                   Text('MicroAct v1.0.0', style: theme.textTheme.titleMedium),
                   const SizedBox(height: 4),
                   Text(
-                    'Micro-motion Analysis & Response Tracking\nXác thực người thật bằng vi chuyển động khuôn mặt.',
+                    'Micro-motion Analysis & Confidence Tracking\nXác thực người thật bằng vi chuyển động khuôn mặt.',
                     style: theme.textTheme.bodyMedium,
                   ),
                 ],

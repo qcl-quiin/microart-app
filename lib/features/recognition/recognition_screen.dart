@@ -614,7 +614,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
               const _StepItem(number: 1, text: 'Đang trong cuộc gọi video (Zalo, Messenger...), thoát ra màn hình chính để mở MicroAct'),
               const _StepItem(number: 2, text: 'Nhấn "Bắt đầu nhận diện", đọc lưu ý và cho phép ghi màn hình'),
               const _StepItem(number: 3, text: 'Quay lại cuộc gọi, bấm vào cửa sổ cuộc gọi nhỏ để phóng to toàn màn hình'),
-              const _StepItem(number: 4, text: 'Kéo khung xanh che đúng MẶT CỦA BẠN (ô nhỏ của bạn trong cuộc gọi), rồi bấm ✓'),
+              const _StepItem(number: 4, text: 'Kéo khung xanh vào đúng khu vực MẶT CỦA BẠN (camera của bạn trong cuộc gọi), rồi bấm ✓'),
               const _StepItem(number: 5, text: 'KHÔNG chạm vào màn hình, chờ ~10 giây để nhận kết quả'),
               SizedBox(
                 width: double.infinity,

@@ -322,14 +322,14 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
           left: 4,
           right: 32,
           child: Container(
-            padding: const EdgeInsets.all(4),
+            padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
-              color: const Color(0xB3000000),
+              color: const Color(0xE6000000),
               borderRadius: BorderRadius.circular(6),
             ),
             child: const Text(
-              'Phóng to cuộc gọi, kéo khung này che MẶT BẠN rồi bấm ✓',
-              style: TextStyle(color: Colors.white, fontSize: 10, height: 1.2),
+              'Kéo khung vào đúng MẶT BẠN rồi bấm ✓',
+              style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700, height: 1.25),
               maxLines: 4,
               overflow: TextOverflow.ellipsis,
             ),

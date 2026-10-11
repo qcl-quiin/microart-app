@@ -70,6 +70,7 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
   bool _isReal = true;
   double _confidence = 0;
   String _description = '';
+  String _shortDescription = ''; // câu ngắn hiện ở bong bóng (khác câu dài lưu trong Lịch sử)
   int? _historyId;
 
   int _processingCaptionIndex = 0;
@@ -219,6 +220,7 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
         _isReal = map['isReal'] as bool;
         _confidence = (map['confidence'] as num).toDouble();
         _description = map['description'] as String;
+        _shortDescription = (map['shortDescription'] as String?) ?? _description;
         _historyId = map['historyId'] as int?;
       });
     });
@@ -483,7 +485,7 @@ class _RecognitionOverlayState extends State<_RecognitionOverlay> {
           ],
         ),
         const SizedBox(height: 6),
-        Text(_description, style: const TextStyle(color: Colors.white70, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
+        Text(_shortDescription, style: const TextStyle(color: Colors.white70, fontSize: 11), maxLines: 2, overflow: TextOverflow.ellipsis),
         const Spacer(),
         SizedBox(
           width: double.infinity,

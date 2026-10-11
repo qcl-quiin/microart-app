@@ -560,12 +560,29 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
     }
     final bool isReal = fin['is_real'] == true;
     final double percent = ((isReal ? fin['real_pct'] : fin['fake_pct']) as num).toDouble();
+    // Máy chủ mới trả câu ngắn riêng cho bong bóng (notes_short). Máy chủ cũ không có thì dùng câu soạn sẵn
+    // trong app, để không bao giờ hiện chi tiết kỹ thuật bên trong.
+    final dynamic noteShort = data['notes_short'];
+    final bool serverHasText = noteShort is String && noteShort.isNotEmpty && noteText.isNotEmpty;
     return {
       'isReal': isReal,
       'confidence': percent,
-      'description': noteText,
+      'description': serverHasText ? noteText : _detailText(isReal),
+      'shortDescription': serverHasText ? noteShort : _shortText(isReal),
     };
   }
+
+  // Câu ngắn hiện ở bong bóng.
+  String _shortText(bool isReal) => isReal
+      ? 'Chuyển động khuôn mặt tự nhiên, không thấy dấu hiệu bất thường.'
+      : 'Phát hiện dấu hiệu bất thường ở khuôn mặt, nghi giả mạo.';
+
+  // Câu chi tiết hơn lưu trong Lịch sử.
+  String _detailText(bool isReal) => isReal
+      ? 'Hệ thống phân tích chuyển động và đặc điểm khuôn mặt trong đoạn video và không phát hiện dấu hiệu bất thường. '
+          'Các biểu hiện nhất quán với một người thật.'
+      : 'Hệ thống phát hiện dấu hiệu bất thường ở chuyển động và đặc điểm khuôn mặt. '
+          'Khuôn mặt này có khả năng là giả mạo: bị ghép/tạo bằng AI, hoặc là ảnh/video phát lại.';
 
   // Lưu lịch sử + thông báo (chỉ khi có kết quả thật) rồi báo cho overlay hiển thị.
   Future<void> _publishOutcome(SharedPreferences prefs, Map<String, dynamic> outcome) async {
@@ -578,6 +595,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
     final bool isReal = outcome['isReal'] as bool;
     final double confidence = outcome['confidence'] as double;
     final String description = outcome['description'] as String;
+    final String shortDescription = (outcome['shortDescription'] as String?) ?? description;
 
     final historyId = await DatabaseHelper.instance.insertHistory(HistoryEntry(
       result: isReal ? 'REAL' : 'FAKE',
@@ -595,6 +613,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
       'isReal': isReal,
       'confidence': confidence,
       'description': description,
+      'shortDescription': shortDescription,
       'historyId': historyId,
     }));
     _log('[MicroArt] đã ghi pending_result vào SharedPreferences (historyId=$historyId)');

@@ -1,0 +1,40 @@
+name: moinsen_screen_recording
+description: >-
+  Gradle-9-clean fork of flutter_screen_recording. Native screen recording
+  for Android/iOS/Web with the dead jcenter + bytedance repositories removed,
+  which is what breaks an upstream 2.0.25 build on Gradle 9.
+version: 1.0.1+microact1
+homepage: https://testerpaykit.com
+repository: https://github.com/moinsen-dev/TesterPayKit
+
+topics:
+  - screen-recording
+  - recording
+  - media-projection
+
+environment:
+  sdk: ^3.5.0
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Upstream federated pieces are pure-Dart (platform_interface) / web —
+  # no Gradle involved, so they stay on the original packages. Only the
+  # main package's Android build.gradle needed forking.
+  flutter_foreground_task: ^9.1.0
+  flutter_screen_recording_platform_interface: ^1.0.3
+  flutter_screen_recording_web: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.isvisoft.flutter_screen_recording
+        pluginClass: FlutterScreenRecordingPlugin
+      web:
+        default_package: flutter_screen_recording_web

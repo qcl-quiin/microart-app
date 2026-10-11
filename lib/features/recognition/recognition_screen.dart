@@ -378,6 +378,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
       _log('[MicroArt] LỖI khi dừng ghi màn hình: $e');
     }
     _log('[MicroArt] đã dừng ghi màn hình, file: $videoPath, cắt từ giây ${trimStartSec.toStringAsFixed(2)}');
+    if (videoPath != null && videoPath.isNotEmpty) {
+      await _waitVideoReady(videoPath);
+    }
     if (kDebugMode && zone != null) {
       // Dán thẳng vào lệnh test trên máy tính để chạy lại đúng phiên này với ảnh gỡ lỗi:
       final z = zone;
@@ -409,6 +412,46 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
       }
     }
     await _publishOutcome(prefs, outcome);
+  }
+
+  // Một số máy (VD vivo) trả đường dẫn video khi file còn đang được hoàn tất (chưa ghi xong phần đóng file) → server báo
+  // "không mở được file video". Chờ tới khi dung lượng file hết thay đổi (tối đa ~8 s), rồi kiểm tra đọc được thời lượng.
+  Future<void> _waitVideoReady(String path) async {
+    try {
+      int last = -1;
+      int stable = 0;
+      final sw = Stopwatch()..start();
+      while (sw.elapsedMilliseconds < 8000) {
+        int len = 0;
+        try {
+          final f = File(path);
+          if (await f.exists()) len = await f.length();
+        } catch (_) {}
+        if (len > 0 && len == last) {
+          stable++;
+          if (stable >= 2) break;
+        } else {
+          stable = 0;
+        }
+        last = len;
+        await Future.delayed(const Duration(milliseconds: 400));
+      }
+      for (int i = 0; i < 4; i++) {
+        double sec = 0;
+        try {
+          final info = await VideoCompress.getMediaInfo(path);
+          sec = (info.duration ?? 0) / 1000.0;
+        } catch (_) {}
+        if (sec > 0) {
+          _log('[MicroArt] video sẵn sàng: ${sec.toStringAsFixed(1)}s, ${(last / 1048576).toStringAsFixed(2)}MB');
+          return;
+        }
+        await Future.delayed(const Duration(milliseconds: 700));
+      }
+      _log('[MicroArt] CẢNH BÁO: không đọc được thời lượng video, vẫn gửi thử');
+    } catch (e) {
+      _log('[MicroArt] LỖI khi chờ video: $e');
+    }
   }
 
   // Cắt từ lúc bấm ✓ (làm tròn xuống giây nguyên, phần lẻ để server cắt nốt), giữ vừa đủ đoạn phân tích, giảm bitrate.
@@ -536,7 +579,12 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
       final srvSec = timing is Map ? timing['total_server_sec'] : null;
       _log('[MicroArt] gửi ${(body.length / 1048576).toStringAsFixed(2)}MB + chờ server: ${sw.elapsedMilliseconds}ms; '
           'server tự báo xử lý: ${srvSec}s');
-      return _toUiResult(data);
+      final ui = _toUiResult(data);
+      final dynamic uiErr = ui['error'];
+      if (uiErr is String && uiErr.startsWith('Không đọc được video')) {
+        return {'error': 'Video vừa ghi bị lỗi (${(bytes.length / 1048576).toStringAsFixed(2)} MB). Hãy thử lại.'};
+      }
+      return ui;
     } on TimeoutException {
       return {'error': 'Máy chủ phản hồi quá lâu. Kiểm tra mạng rồi thử lại.'};
     } on SocketException {

@@ -1,0 +1,82 @@
+// Gradle-9-clean build.gradle for the moinsen_screen_recording fork.
+//
+// Upstream (isvisoft/flutter_screen_recording 2.0.25) declares two DEAD /
+// unreachable repositories that a Gradle 9 app build fails on:
+//   1. `jcenter()` — shut down in 2021.
+//   2. `https://artifact.bytedance.com/repository/Volcengine/` — a
+//      third-party repo, unreachable in most networks.
+// On Gradle 8 these are merely tried-and-skipped; Gradle 9 fails harder
+// on unreachable repositories. This fork removes exactly those two and
+// keeps everything else that already works, including the native
+// recorder `com.github.HBiSoft:HBRecorder` from jitpack — a LIVE repo
+// the plugin injects via `allprojects` below, so consuming apps still
+// need no repository config of their own.
+//
+// (An earlier attempt vendored HBRecorder as a local .aar; AGP forbids
+// `implementation files('*.aar')` in a library module — "Direct local
+// .aar file dependencies are not supported when building an AAR" — so
+// the jitpack dependency is the correct mechanism here.)
+
+group 'com.isvisoft.flutter_screen_recording'
+version '1.0'
+
+buildscript {
+    ext.kotlin_version = '1.9.10'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.6.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        // HBRecorder (native recorder) lives on jitpack — a live repo,
+        // fine on Gradle 9. Injected here so apps need no config.
+        maven { url 'https://jitpack.io' }
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    // Conditional for compatibility with AGP <4.2.
+    if (project.android.hasProperty("namespace")) {
+        namespace 'com.isvisoft.flutter_screen_recording'
+    }
+
+    compileSdk 35
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        minSdkVersion 23
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    lint {
+        disable 'InvalidPackage'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.0'
+    implementation 'com.github.HBiSoft:HBRecorder:2.0.5'
+}

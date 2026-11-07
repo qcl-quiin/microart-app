@@ -1,19 +1,27 @@
 workflows:
   ios-build:
-    name: Build iOS IPA
+    name: Build iOS for Sideloadly
     instance_type: mac_mini_m2
+    max_build_duration: 60
 
     environment:
       flutter: stable
+      xcode: latest
 
     scripts:
-      - name: Install dependencies
+      - name: Get Flutter packages
         script: |
           flutter pub get
 
-      - name: Build IPA
+      - name: Build iOS without signing
         script: |
-          flutter build ipa --release
+          flutter build ios --release --no-codesign
+
+      - name: Package IPA
+        script: |
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -r Microact.ipa Payload
 
     artifacts:
-      - build/ios/ipa/*.ipa
+      - Microact.ipa

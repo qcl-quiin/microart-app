@@ -13,6 +13,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/database/database_helper.dart';
 import '../../core/models/history_entry.dart';
 import '../../core/models/notification_entry.dart';
+import 'firebase_endpoint.dart';
 
 // Log chỉ in khi chạy bản debug (flutter run), hoặc khi build kèm --dart-define=MICROART_LOG=true.
 // Bản release bình thường KHÔNG in gì ra logcat (tránh lộ tên tệp, đường dẫn).
@@ -37,8 +38,12 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
 
   static const MethodChannel _nativeChannel = MethodChannel('microart/native');
 
-  // Địa chỉ máy chủ (Modal). Deploy ra URL mới thì đổi ở đây.
-  static const String _serverUrl = 'https://danghoanganhquan6--microart-tang1-tang1service-check-liveness.modal.run';
+  static const _firebaseDatabase = String.fromEnvironment(
+    'MICROACT_FIREBASE_DB',
+    defaultValue: 'https://sever-342e8-default-rtdb.asia-southeast1.firebasedatabase.app',
+  );
+  static const _demoCode = String.fromEnvironment('MICROACT_DEMO_CODE');
+  Uri _serverUri = Uri.parse('https://danghoanganhquan6--microart-tang1-tang1service-check-liveness.modal.run');
 
   // Luồng ghi: app ghi màn hình TỪ LÚC CẤP QUYỀN (plugin hỏi quyền và ghi cùng một lúc), nhưng chỉ
   // phân tích từ lúc người dùng bấm ✓ trên khung. Server cắt bỏ phần đầu theo trim_start_sec.
@@ -185,7 +190,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
     HttpClient? client;
     try {
       client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
-      final req = await client.postUrl(Uri.parse(_serverUrl));
+      final req = await client.postUrl(_serverUri);
+      req.followRedirects = false;
+      if (_firebaseDatabase.isNotEmpty) req.headers.set('X-MicroAct-Code', _demoCode);
       req.headers.contentType = ContentType.json;
       final body = utf8.encode(jsonEncode({'frames_base64': <String>[]}));
       req.contentLength = body.length;
@@ -197,6 +204,21 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
       _log('[MicroArt] đánh thức máy chủ không được (bỏ qua): $e');
     } finally {
       client?.close();
+    }
+  }
+
+  Future<bool> _prepareLaptopEndpoint() async {
+    if (_demoCode.isEmpty) {
+      _showSnack('Bản MicroAct này chưa có quyền kết nối. Hãy cài bản mới từ ban tổ chức.');
+      return false;
+    }
+    try {
+      _serverUri = await readCloudflareEndpoint(_firebaseDatabase);
+      return mounted;
+    } catch (e) {
+      _log('[MicroArt] Không đọc được địa chỉ máy chủ: $e');
+      if (mounted) _showSnack('Chưa lấy được địa chỉ máy chủ. Hãy kiểm tra mạng và thử lại.');
+      return false;
     }
   }
 
@@ -227,8 +249,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
         return;
       }
 
-      // Dọn tín hiệu cũ và overlay cũ (nếu còn) trước khi bắt đầu phiên mới.
       final prefs = await SharedPreferences.getInstance();
+      if (_firebaseDatabase.isNotEmpty && !await _prepareLaptopEndpoint()) return;
+
+      // Dọn tín hiệu cũ và overlay cũ (nếu còn) trước khi bắt đầu phiên mới.
       for (final key in const ['confirm_ms', 'cancel_session', 'self_zone', 'pending_result', 'pending_action', 'pending_action_id']) {
         await prefs.remove(key);
       }
@@ -565,12 +589,17 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
       final body = utf8.encode(jsonEncode(payload));
       client = HttpClient()..connectionTimeout = const Duration(seconds: 20);
       final sw = Stopwatch()..start();
-      final req = await client.postUrl(Uri.parse(_serverUrl));
+      final req = await client.postUrl(_serverUri);
+      req.followRedirects = false;
+      if (_firebaseDatabase.isNotEmpty) req.headers.set('X-MicroAct-Code', _demoCode);
       req.headers.contentType = ContentType.json;
       req.contentLength = body.length;
       req.add(body);
       final resp = await req.close().timeout(const Duration(seconds: 200));
       final text = await resp.transform(utf8.decoder).join();
+      if (_firebaseDatabase.isNotEmpty && resp.statusCode == HttpStatus.unauthorized) {
+        return {'error': 'Bản MicroAct này chưa được cấp quyền. Hãy cài bản mới từ ban tổ chức.'};
+      }
       if (resp.statusCode != 200) {
         return {'error': 'Máy chủ trả về lỗi (${resp.statusCode}). Hãy thử lại.'};
       }
@@ -603,7 +632,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> with WidgetsBindi
     final dynamic fin = data['final'];
     final dynamic notes = data['notes'];
     final String noteText = notes is String ? notes : '';
-    if (fin is! Map) {
+    if (fin is! Map || fin['status'] == 'inconclusive') {
       return {'error': noteText.isNotEmpty ? noteText : 'Máy chủ không trả về kết quả.'};
     }
     final bool isReal = fin['is_real'] == true;

@@ -10,8 +10,13 @@ plugins {
 // Khoá ký bản release: đọc từ android/key.properties (file này KHÔNG đưa lên git, xem android/.gitignore).
 // Chưa có file đó thì bản release tạm ký bằng khoá debug: chạy thử được, nhưng KHÔNG dùng để phát hành.
 val keystoreProperties = Properties()
-val keystorePropertiesFile = rootProject.file("key.properties")
+val externalSigningRoot = providers.environmentVariable("MICROACT_ANDROID_SIGNING_ROOT").orNull
+val signingRoot = externalSigningRoot?.let { rootProject.file(it) } ?: rootProject.projectDir
+val keystorePropertiesFile = signingRoot.resolve("key.properties")
 val hasReleaseKey = keystorePropertiesFile.exists()
+check(externalSigningRoot == null || hasReleaseKey) {
+    "key.properties was not found in MICROACT_ANDROID_SIGNING_ROOT"
+}
 if (hasReleaseKey) {
     FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
 }
@@ -39,6 +44,7 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["microactLabel"] = "MicroAct"
     }
 
     signingConfigs {
@@ -46,13 +52,19 @@ android {
             create("release") {
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
-                storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
+                storeFile = keystoreProperties.getProperty("storeFile")?.let {
+                    signingRoot.resolve("app").resolve(it)
+                }
                 storePassword = keystoreProperties.getProperty("storePassword")
             }
         }
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".firebase_debug"
+            manifestPlaceholders["microactLabel"] = "MicroAct Debug"
+        }
         release {
             signingConfig = if (hasReleaseKey) {
                 signingConfigs.getByName("release")

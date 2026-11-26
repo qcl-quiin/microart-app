@@ -16,6 +16,7 @@ dependencies:
   moinsen_screen_recording:
     path: packages/moinsen_screen_recording
   video_compress: ^3.1.4
+  flutter_svg: ^2.5.1
 
 dev_dependencies:
   flutter_test:
@@ -24,3 +25,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icons/home.svg
+    - assets/icons/history.svg
+    - assets/icons/notifications.svg
+    - assets/icons/guide.svg

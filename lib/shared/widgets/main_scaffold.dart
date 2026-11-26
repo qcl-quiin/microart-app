@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import '../../core/navigation/tab_navigation_controller.dart';
 import '../../features/recognition/recognition_screen.dart';
 import '../../features/history/history_screen.dart';
@@ -87,30 +88,26 @@ class _BottomNav extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           _NavItem(
-            icon: Icons.home_outlined,
-            activeIcon: Icons.home,
+            iconAsset: 'assets/icons/home.svg',
             label: 'Nhận diện',
             selected: currentIndex == 0,
             onTap: () => onTap(0),
           ),
           _NavItem(
-            icon: Icons.history_outlined,
-            activeIcon: Icons.history,
+            iconAsset: 'assets/icons/history.svg',
             label: 'Lịch sử',
             selected: currentIndex == 1,
             onTap: () => onTap(1),
           ),
           const SizedBox(width: 48),
           _NavItem(
-            icon: Icons.notifications_outlined,
-            activeIcon: Icons.notifications,
+            iconAsset: 'assets/icons/notifications.svg',
             label: 'Thông báo',
             selected: currentIndex == 2,
             onTap: () => onTap(2),
           ),
           _NavItem(
-            icon: Icons.menu_book_outlined,
-            activeIcon: Icons.menu_book,
+            iconAsset: 'assets/icons/guide.svg',
             label: 'Hướng dẫn',
             selected: currentIndex == 3,
             onTap: () => onTap(3),
@@ -122,15 +119,13 @@ class _BottomNav extends StatelessWidget {
 }
 
 class _NavItem extends StatelessWidget {
-  final IconData icon;
-  final IconData activeIcon;
+  final String iconAsset;
   final String label;
   final bool selected;
   final VoidCallback onTap;
 
   const _NavItem({
-    required this.icon,
-    required this.activeIcon,
+    required this.iconAsset,
     required this.label,
     required this.selected,
     required this.onTap,
@@ -152,7 +147,13 @@ class _NavItem extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(selected ? activeIcon : icon, color: color, size: 22),
+            SvgPicture.asset(
+              iconAsset,
+              width: 22,
+              height: 22,
+              colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+              excludeFromSemantics: true,
+            ),
             const SizedBox(height: 2),
             Text(
               label,
